@@ -1,0 +1,791 @@
+input :
+  month_customer: |
+    SELECT
+           SNAPSHOT_DATE_KEY,
+           A.AIRPOINTS_MEMBERSHIP_NUMBER,
+           POSTAL_DPID_HOME,
+           HOME_POSTAL_CODE,
+           GENDER_DESCRIPTION,
+           MONTHS_SINCE_AP_JOIN,
+           AGE,
+           CUSTOMER_GEOGRAPHIC_SEGMENT,
+           AIRPOINTS_MBRSHIP_TIER_CODE,
+           NUMBER_BANK_CARDS,
+           KORU_FLAG,
+           AIRPOINTS_FAMILY_MEMBER_ROLE,
+           case when AIRPOINTS_TIER_LAST_CHANGE = 'N/A' then 'Unknown' 
+             else AIRPOINTS_TIER_LAST_CHANGE end as AIRPOINTS_TIER_LAST_CHANGE,
+           case when AIRPOINTS_TIER_PREV = 'N/A' then 'Unknown' 
+             else AIRPOINTS_TIER_PREV end as AIRPOINTS_TIER_PREV,
+           USED_ONESMART_PURCHASE_DOM,
+           BUSINESS_CNT_12M,
+           FLIGHTS_BUS_CNT_12M,
+           FLIGHTS_COUPLE_CNT_12M,
+           FLIGHTS_FAMILY_CNT_12M,
+           FLIGHTS_GROUP_CNT_12M,
+           FLIGHTS_LEIS_CNT_12M,
+           FLIGHTS_LH_CNT_12M,
+           FLIGHTS_OAL_CNT_12M,
+           FREQUENCY_RANK,
+           FREQUENCY_RANK_PREV,
+           FUTURE_BOOKING_DOM_CNT_12M,
+           FUTURE_BOOKING_INT_CNT_12M,
+           MONETARY_RANK,
+           MONETARY_RANK_PREV,
+           PREM_ECONOMY_CNT_12M,
+           RECENCY_RANK,
+           RECENCY_RANK_PREV,
+           DOLLARS_BALANCE AS APD_BALANCE,
+           EDM_CONVERT_CNT_12M,
+           EDM_CLICK_CNT_12M,
+           EDM_OPEN_CNT_12M
+         FROM
+             (
+                 SELECT
+                     *
+                 FROM
+                     EDR.FACT_CDH_MONTH_CUSTOMER sample(7)         
+                 WHERE
+                     scheme_id = 'AP'
+                     AND snapshot_date_key = %s
+             ) A 
+         LEFT JOIN EDR.DIM_LOYALTY_CUSTOMER  sample(7) B ON
+             A.Loyalty_customer_key = B.Loyalty_customer_key
+             AND B.delete_ind = 'N'
+             AND B.airpoints_mbrship_status_code IN(
+                 'AC',
+                 'DO',
+                 'TP'
+             )
+         WHERE
+             B.test_member_flag = 'N'
+             AND B.pref_profile_opt_in_flag = 'Y'
+             AND A.age < 120
+             AND B.HOME_COUNTRY_NAME = 'NEW ZEALAND'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ap4b: |
+    SELECT distinct
+        airpoints_membership_number,
+        gc.group_customer_role_code AS AP4B_role
+    FROM
+        (
+            SELECT
+                *
+            FROM
+                EDR.FACT_CDH_GROUP_CUSTOMER
+            WHERE
+                snapshot_date_key = %s
+                AND delete_ind = 'N'
+        ) f
+    INNER JOIN EDR.DIM_GROUP_CUSTOMER gc ON
+        gc.group_customer_key = f.group_customer_key
+    INNER JOIN EDR.DIM_GROUP_MASTER gm ON
+        gm.group_master_key = f.group_master_key
+    INNER JOIN EDR.DIM_LOYALTY_CUSTOMER c ON
+        f.loyalty_customer_key = c.loyalty_customer_key
+    WHERE
+        gm.group_master_type_code = 'AIRPOINTSFORBUSINESS'
+        AND gm.group_master_status_code = 'ACTIVE'
+        AND gc.group_customer_status_code = 'ACTIVE'
+        AND gc.group_customer_role_code <> 'BUSINESS'
+        AND c.test_member_flag = 'N'
+        AND c.HOME_COUNTRY_NAME = 'NEW ZEALAND'
+
+
+
+
+
+
+
+
+
+
+
+
+  apd: |
+    SELECT
+        A.airpoints_membership_number,
+        C.SUB_GROUP,
+        SUM( A.no_of_dollars_amt ) AS apd
+    FROM
+        (
+            SELECT
+                *
+            FROM
+                EDR.FACT_CDH_AIRPOINTS
+            WHERE
+                transaction_date_key BETWEEN %s AND %s
+        ) A
+    INNER JOIN EDR.DIM_POINT_CODE C ON
+        A.POINT_CODE_KEY = C.POINT_CODE_KEY
+    WHERE
+        C.MAIN_GROUP IN(
+            'Air NZ',
+            'Airline',
+            'Financial Partners',
+            'Loyalty NZ',
+            'Retail'
+        )
+        AND A.DELETE_IND = 'N'
+        AND A.EQUIJOIN_FLAG = 'Y'
+        AND A.reversal_id = 0
+        AND REDEMPTION_TYPE_CODE != 'ADJS'
+    GROUP BY
+        A.airpoints_membership_number,
+        C.SUB_GROUP
+
+
+
+
+
+
+
+
+
+
+
+
+  flights: |
+    SELECT
+        ULC.AIRPOINTS_MEMBERSHIP_NUMBER,
+        UPPER( REPLACE( LND.route_analytics, ' ', '_' ))|| '_12M' AS route_analytics,
+        COUNT( 1 ) AS FLIGHTS
+    FROM
+        (
+            SELECT
+                *
+            FROM
+                EDR.FACT_RES_PASSENGER_LEG FRP
+            WHERE
+                FRP.DSS_FACT_CURRENT_FLAG = 'Y'
+                AND FRP.LEG_CANCELLATION_FLAG = 'N'
+                AND FRP.LOCAL_DEPARTURE_DATE_KEY BETWEEN %s AND %s
+                AND FRP.refund_flag = 'N'
+                AND FRP.ticket_number != 'N/A'
+                AND FRP.emd_sequence_number = 1
+        ) F
+    INNER JOIN EDR.DIM_USAGE_LOYALTY_CUSTOMER ULC ON
+        ULC.USAGE_LOYALTY_CUSTOMER_KEY = F.USAGE_LOYALTY_CUSTOMER_KEY
+        AND ULC.delete_ind = 'N'
+        AND ULC.TEST_MEMBER_FLAG = 'N'
+        AND ULC.airpoints_membership_number NOT IN(
+            'UNKNOWN',
+            'N/A'
+        )
+        AND ULC.HOME_COUNTRY_NAME = 'NEW ZEALAND'
+        
+    LEFT JOIN EDR.DIM_LEG_ORIGIN_AIRPORT LOA ON
+        LOA.LEG_ORIGIN_AIRPORT_KEY = F.LEG_ORIGIN_AIRPORT_KEY
+        AND LOA.LEG_ORIGIN_AIRPORT_CODE != 'U'
+    LEFT JOIN EDR.DIM_LEG_DESTINATION_AIRPORT LDA ON
+        LDA.LEG_DESTINATION_AIRPORT_KEY = F.LEG_DESTINATION_AIRPORT_KEY
+        AND LDA.LEG_DESTINATION_AIRPORT_CODE != 'U'
+    LEFT JOIN EDR.DIM_LEG_NON_DIR_AIRPORT_PAIR LND ON
+        LND.LEG_NON_DIR_AIRPORT_PAIR_KEY = F.LEG_NON_DIR_AIRPORT_PAIR_KEY
+    WHERE
+        UPPER( LND.route_analytics )!= 'UNKNOWN'
+    GROUP BY
+        ULC.AIRPOINTS_MEMBERSHIP_NUMBER,
+        UPPER( REPLACE( LND.route_analytics, ' ', '_' ))|| '_12M'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        
+  status_points: |
+    SELECT
+        AIRPOINTS_MEMBERSHIP_NUMBER,
+        CASE
+            WHEN main_group = 'Financial Partners' THEN 'SP_CCARD_12M'
+            WHEN main_group = 'Airline'
+            AND point_code_desc = 'Air New Zealand' THEN 'SP_AIRNZ_12M'
+            WHEN main_group = 'Airline'
+            AND point_code_desc != 'Air New Zealand' THEN 'SP_OAL_12M'
+            ELSE 'SP_OTHER_12M'
+        END AS EARN_TYPE,
+        SUM( earn_value ) AS status_points
+    FROM
+        edr.FACT_CDH_STATUS_POINTS A
+    INNER JOIN EDR.DIM_POINT_CODE C ON
+        A.POINT_CODE_KEY = C.POINT_CODE_KEY
+    INNER JOIN edr.dim_loyalty_customer B ON
+        A.loyalty_customer_key = b.loyalty_customer_key
+    INNER JOIN EDR.DIM_AIR_NON_AIR D ON
+        A.AIR_NON_AIR_KEY = D.AIR_NON_AIR_KEY
+    INNER JOIN EDR.DIM_EARN_DATE E ON
+        A.EARN_DATE_KEY = E.EARN_DATE_KEY
+    WHERE
+        A.DELETE_IND = 'N'
+        AND E.EARN_DATE_KEY BETWEEN %s AND %s
+        AND A.reversal_id = 0
+        AND B.HOME_COUNTRY_NAME = 'NEW ZEALAND'
+    GROUP BY
+        AIRPOINTS_MEMBERSHIP_NUMBER,
+        CASE
+            WHEN main_group = 'Financial Partners' THEN 'SP_CCARD_12M'
+            WHEN main_group = 'Airline'
+            AND point_code_desc = 'Air New Zealand' THEN 'SP_AIRNZ_12M'
+            WHEN main_group = 'Airline'
+            AND point_code_desc != 'Air New Zealand' THEN 'SP_OAL_12M'
+            ELSE 'SP_OTHER_12M'
+        END
+
+
+
+  ancillary: |
+    SELECT 
+    distinct
+        AL9.AIRPOINTS_MEMBERSHIP_NUMBER,
+      	AL4.RES_SYSTEM_PRODUCT_DESCRIPTION,
+      	count(distinct AL1.EMD_DOCUMENT_NO) AS emd
+    FROM 
+      	EDR.FACT_EMD_SALE_DOCUMENT AL1, 
+      	EDR.DIM_SELL_AGENT AL2, 
+      	EDR.DIM_LOCAL_DOCUMENT_ISSUE_DATE AL3, 
+      	EDR.DIM_FIRST_RES_SYSTEM_PRODUCT AL4, 
+      	EDR.DIM_LOYALTY_CUSTOMER AL9 
+    WHERE 
+      	AL2.SELL_AGENT_KEY=AL1.SELL_AGENT_KEY 
+      	AND AL3.LOCAL_DOCUMENT_ISSUE_DATE_KEY=AL1.LOCAL_DOCUMENT_ISSUE_DATE_KEY 
+      	AND AL4.FIRST_RES_SYSTEM_PRODUCT_KEY=AL1.FIRST_RES_SYSTEM_PRODUCT_KEY 
+      	AND AL9.LOYALTY_CUSTOMER_KEY=AL1.LOYALTY_CUSTOMER_KEY
+      	AND AL9.HOME_COUNTRY_NAME = 'NEW ZEALAND'
+      	AND AIRPOINTS_MEMBERSHIP_NUMBER != 'UNKNOWN'
+      	AND AL3.LOCAL_DOCUMENT_ISSUE_DATE_KEY between %s and %s
+      	AND AL4.RES_SYSTEM_PRODUCT_DESCRIPTION not in 
+      	('MISCELLANEOUS CHARGE', 'PENALTY FEE', 'RESIDUAL VALUE')
+    GROUP BY 
+        AIRPOINTS_MEMBERSHIP_NUMBER, RES_SYSTEM_PRODUCT_DESCRIPTION
+
+
+
+
+
+#############################################################################################
+
+
+target:
+  destpart: |
+    SELECT distinct
+    DCC.AIRPOINTS_MEMBERSHIP_NUMBER
+    FROM 
+    (select 
+    FRP.AIRPOINTS_MEMBERSHIP_NUMBER, 
+    FRP.LOYALTY_CUSTOMER_ID, 
+    FRP.ITIN_DESTINATION_AIRPORT_KEY, 
+    FRP.ITIN_ORIGIN_AIRPORT_KEY
+    from EDR.FACT_RES_PASSENGER_LEG PARTITION (%s) FRP
+    where FRP.DSS_FACT_CURRENT_FLAG = 'Y'
+    and FRP.LOCAL_DEPARTURE_DATE_KEY between %s and %s
+    and FRP.itinerary_sequence_number = 1
+    and FRP.LEG_CANCELLATION_FLAG = 'N'
+    and FRP.Ticket_Number != 'N/A') F
+    INNER JOIN EDR.DIM_CURRENT_CUSTOMER DCC ON DCC.CURRENT_CUSTOMER_KEY = F.LOYALTY_CUSTOMER_ID
+    AND DCC.AIRPOINTS_MEMBERSHIP_NUMBER not in ('UNKNOWN','N/A')
+    INNER JOIN EDR.DIM_ITIN_ORIGIN_AIRPORT IOA ON IOA.ITIN_ORIGIN_AIRPORT_KEY = F.ITIN_ORIGIN_AIRPORT_KEY
+    AND IOA.ISO_COUNTRY_CODE = 'NZ' 
+    INNER JOIN EDR.DIM_ITIN_DESTINATION_AIRPORT IDA ON IDA.ITIN_DESTINATION_AIRPORT_KEY = F.ITIN_DESTINATION_AIRPORT_KEY
+    AND IDA.%s in (%s)
+  dest: |
+    SELECT distinct
+    DCC.AIRPOINTS_MEMBERSHIP_NUMBER
+    FROM 
+    (select * from EDR.FACT_RES_PASSENGER_LEG FRP
+    where FRP.DSS_FACT_CURRENT_FLAG = 'Y'
+    and FRP.LOCAL_DEPARTURE_DATE_KEY between %s and %s
+    and FRP.itinerary_sequence_number = 1
+    and FRP.LEG_CANCELLATION_FLAG = 'N'
+    and FRP.Ticket_Number != 'N/A') F
+    LEFT JOIN EDR.DIM_CURRENT_CUSTOMER DCC ON DCC.CURRENT_CUSTOMER_KEY = F.LOYALTY_CUSTOMER_ID
+    LEFT JOIN EDR.DIM_ITIN_DESTINATION_AIRPORT IDA ON IDA.ITIN_DESTINATION_AIRPORT_KEY = F.ITIN_DESTINATION_AIRPORT_KEY
+    LEFT JOIN EDR.DIM_ITIN_ORIGIN_AIRPORT IOA ON IOA.ITIN_ORIGIN_AIRPORT_KEY = F.ITIN_ORIGIN_AIRPORT_KEY
+    WHERE IDA.%s in (%s)
+    and IOA.ISO_COUNTRY_CODE = 'NZ'
+  destinations: |
+    SELECT distinct
+    ULC.AIRPOINTS_MEMBERSHIP_NUMBER,
+    IDA.ITIN_DESTINATION_AIRPORT_CODE as dest
+    
+    FROM EDR.FACT_RES_PASSENGER_LEG F
+    LEFT OUTER JOIN EDR.DIM_USAGE_LOYALTY_CUSTOMER ULC ON ULC.USAGE_LOYALTY_CUSTOMER_KEY = F.USAGE_LOYALTY_CUSTOMER_KEY
+    LEFT OUTER JOIN EDR.DIM_ITIN_DESTINATION_AIRPORT IDA ON IDA.ITIN_DESTINATION_AIRPORT_KEY = F.ITIN_DESTINATION_AIRPORT_KEY
+    LEFT OUTER JOIN EDR.DIM_ITIN_ORIGIN_AIRPORT IOA ON IOA.ITIN_ORIGIN_AIRPORT_KEY = F.ITIN_ORIGIN_AIRPORT_KEY
+    
+    WHERE
+    f.DSS_FACT_CURRENT_FLAG = 'Y'
+    and f.itinerary_sequence_number = 1
+    and f.LEG_CANCELLATION_FLAG = 'N'
+    and f.REFUND_FLAG = 'N'
+    and f.Ticket_Number != 'N/A'
+    and ULC.AIRPOINTS_MEMBERSHIP_NUMBER not in ('N/A','UNKNOWN')
+    and ULC.TEST_MEMBER_FLAG = 'N'
+    and ULC.delete_ind = 'N'
+    AND ULC.HOME_COUNTRY_NAME = 'NEW ZEALAND'
+    and f.LOCAL_DEPARTURE_DATE_KEY between %s and %s
+    and IOA.ISO_COUNTRY_CODE  = 'NZ' 
+    and IDA.ITIN_DESTINATION_AIRPORT_CODE in (
+    'ADL', 
+    'APW', 
+    'BNE', 
+    'CNS', 
+    'DPS', 
+    'DRW', 
+    'EZE', 
+    'HKG', 
+    'HNL', 
+    'IAH', 
+    'IUE', 
+    'LAX', 
+    'LHR', 
+    'MCY', 
+    'MEL', 
+    'NAN', 
+    'NOU', 
+    'NRT', 
+    'OOL', 
+    'ORD', 
+    'PER', 
+    'PEK', 
+    'PPT', 
+    'PVG', 
+    'RAR', 
+    'SFO', 
+    'SIN', 
+    'SYD', 
+    'SGN', 
+    'TBU', 
+    'VLI', 
+    'YVR'
+    )
+  regions: |
+    SELECT distinct
+    ULC.AIRPOINTS_MEMBERSHIP_NUMBER,
+    IDA.ITIN_DESTINATION_AIRPORT_CODE as dest
+    
+    FROM EDR.FACT_RES_PASSENGER_LEG F
+    LEFT OUTER JOIN EDR.DIM_USAGE_LOYALTY_CUSTOMER ULC ON ULC.USAGE_LOYALTY_CUSTOMER_KEY = F.USAGE_LOYALTY_CUSTOMER_KEY
+    LEFT OUTER JOIN EDR.DIM_ITIN_DESTINATION_AIRPORT IDA ON IDA.ITIN_DESTINATION_AIRPORT_KEY = F.ITIN_DESTINATION_AIRPORT_KEY
+    LEFT OUTER JOIN EDR.DIM_ITIN_ORIGIN_AIRPORT IOA ON IOA.ITIN_ORIGIN_AIRPORT_KEY = F.ITIN_ORIGIN_AIRPORT_KEY
+    
+    WHERE
+    f.DSS_FACT_CURRENT_FLAG = 'Y'
+    and f.itinerary_sequence_number = 1
+    and f.LEG_CANCELLATION_FLAG = 'N'
+    and f.REFUND_FLAG = 'N'
+    and f.Ticket_Number != 'N/A'
+    and ULC.AIRPOINTS_MEMBERSHIP_NUMBER not in ('N/A','UNKNOWN')
+    and ULC.TEST_MEMBER_FLAG = 'N'
+    and ULC.delete_ind = 'N'
+    AND ULC.HOME_COUNTRY_NAME = 'NEW ZEALAND'
+    and f.LOCAL_DEPARTURE_DATE_KEY between %s and %s
+    and IOA.ISO_COUNTRY_CODE  = 'NZ' 
+    and IDA.REGION_NAME in (
+    'ASIA/JAPAN',
+    'PACIFIC ISLANDS',
+    'NORTH AMERICA'
+    )
+  airpoints_partner: |
+    WITH targets AS(
+    SELECT
+        DISTINCT AIRPOINTS_MEMBERSHIP_NUMBER,
+        CASE
+            WHEN pc.ACCOUNTING_GROUP_ID IN(
+                'NWNI',
+                'NWSI'
+            ) THEN 'NEW_WORLD'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('ZZZZ') THEN 'Z'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('MRPP') THEN 'MERCURY'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('MI10') THEN 'MITRE_10'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('TOWR') THEN 'TOWER'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('LIQL') THEN 'LIQUORLAND'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('NOUR') THEN 'NOURISH'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('FARM') THEN 'FARMLANDS'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('POIN') THEN 'YOUSHOP'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('BAYL') THEN 'BAYLEYS'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('AUDI') THEN 'AUDI'
+            WHEN pc.SUB_GROUP = 'Airpoints Mall' THEN 'AIRPOINTS_MALL'
+            WHEN pc.SUB_GROUP = 'Wine Store' THEN 'WINE_STORE'
+            WHEN PC.ACCOUNTING_GROUP_ID IN('MLMP') THEN 'MOLEMAP'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('HENR') THEN 'HENRYS'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('JRDF') THEN 'JR_DUTY_FREE'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('TREN') THEN 'TRENTS'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('GILM') THEN 'GILMOURS'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('ECON') THEN 'ECONOMIST'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('MACP') THEN 'MACPAC'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('HARV') THEN 'HARVEY_NORMAN'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('BLUE') THEN 'BLUE_BRIDGE'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('AMPL') THEN 'AMPLIFON'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('BEAU') THEN 'BEAUREPAIRES'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('PART') THEN 'PARTRIDGE'
+            WHEN pc.ACCOUNTING_GROUP_ID IN('CALT') THEN 'CALTEX'
+            WHEN pc.SUB_GROUP = 'Flexipay' THEN 'FLEXIPAY'
+            WHEN PC.point_code_id in ('AIAA', 'AIAB', 'AIAC') THEN 'AIA_INSURANCE'
+            WHEN PC.point_code_id in ('SOVA', 'SOVB', 'SOVR') THEN 'SOVEREIGN'
+            WHEN PC.point_code_id in ('ESTS') THEN 'AIRPOINTS_STORE'
+        END AS PARTNER,
+        1 AS Target
+    FROM
+        (
+            SELECT
+                *
+            FROM
+                EDR.FACT_CDH_AIRPOINTS
+            WHERE
+                transaction_date_key BETWEEN %s and %s
+        ) a
+    LEFT JOIN EDR.DIM_POINT_CODE pc ON
+        a.POINT_CODE_KEY = pc.POINT_CODE_KEY
+    LEFT JOIN EDR.DIM_LOYALTY_TRANSACTION_TYPE b ON
+        a.LOYALTY_TRANSACTION_TYPE_KEY = b.LOYALTY_TRANSACTION_TYPE_KEY
+    WHERE
+        a.DELETE_IND = 'N'
+        AND a.EQUIJOIN_FLAG = 'Y'
+        AND a.REVERSAL_ID = 0
+        AND REDEMPTION_TYPE_CODE != 'ADJS'
+        AND HOME_NO_OF_DOLLARS_AMT != 0
+    ) SELECT
+    *
+    FROM
+    TARGETS
+    WHERE
+    partner IS NOT NULL
+  ap4s: |
+    SELECT DISTINCT
+     A.AIRPOINTS_MEMBERSHIP_NUMBER,
+    'AP4S' as PARTNER,
+    1 AS TARGET
+    FROM EDR.FACT_CDH_AIRPOINTS A
+    INNER JOIN EDR.DIM_POINT_CODE B
+      ON A.POINT_CODE_KEY = B.POINT_CODE_KEY
+    INNER JOIN EDR.DIM_CURRENT_CUSTOMER C
+      ON A.CURRENT_CUSTOMER_KEY = C.CURRENT_CUSTOMER_KEY
+    WHERE
+    B.POINT_CODE_DESC LIKE 'Airpoints for Schools%%'
+    AND TRANSACTION_DATE_KEY between %s AND %s
+  shairpoints: |
+    SELECT distinct
+    AL4.AIRPOINTS_MEMBERSHIP_NUMBER,
+    'SHAIRPOINTS_OWNER' as PARTNER,
+    1 AS TARGET
+    FROM 
+    EDR.FACT_CDH_GROUP_CUSTOMER AL1, 
+    EDR.DIM_GROUP_MASTER AL2, 
+    EDR.DIM_GROUP_CUSTOMER AL3, 
+    EDR.DIM_LOYALTY_CUSTOMER AL4
+    WHERE 
+    (AL2.GROUP_MASTER_KEY=AL1.GROUP_MASTER_KEY 
+    AND AL3.GROUP_CUSTOMER_KEY=AL1.GROUP_CUSTOMER_KEY 
+    AND AL4.LOYALTY_CUSTOMER_KEY=AL1.LOYALTY_CUSTOMER_KEY)  
+    AND ((AL1.SNAPSHOT_DATE_KEY= %s  
+    AND AL2.GROUP_MASTER_TYPE_CODE='FAMILYAIRPOINTS' 
+    AND AL3.GROUP_CUSTOMER_STATUS_CODE='ACTIVE' 
+    AND AL3.GROUP_CUSTOMER_ROLE_CODE IN ('OWNER')))
+    AND AL3.GROUP_CUSTOMER_START_DATE between 
+    TO_DATE(%s, 'YYYYMMDD') and TO_DATE(%s, 'YYYYMMDD')
+  koru: |
+    select 
+    distinct airpoints_membership_number, 
+    'KORU' as PARTNER, 
+    1 as TARGET
+    FROM EDR.dim_loyalty_customer c
+    inner join EDR.fact_cdh_customer_membership m 
+    on c.Loyalty_Customer_Key = m.Loyalty_Customer_Key
+    WHERE
+    m.Scheme_Id = 1
+    and m.Dss_Current_Flag = 'Y'
+    and m.Membership_Status_Code = 'AC'
+    and c.Delete_Ind = 'N'
+    and c.Test_Member_Flag = 'N'
+    and m.date_created between 
+    TO_DATE(%s, 'YYYYMMDD') and TO_DATE(%s, 'YYYYMMDD')
+  ap4b: |
+    SELECT distinct
+    AL4.AIRPOINTS_MEMBERSHIP_NUMBER,
+    concat('AP4B_',AL3.GROUP_CUSTOMER_ROLE_CODE) as PARTNER,
+    1 as TARGET
+    	FROM 
+    EDR.FACT_CDH_GROUP_CUSTOMER AL1, 
+    EDR.DIM_GROUP_MASTER AL2, 
+    EDR.DIM_GROUP_CUSTOMER AL3, 
+    EDR.DIM_LOYALTY_CUSTOMER AL4
+    	WHERE 
+    (AL2.GROUP_MASTER_KEY=AL1.GROUP_MASTER_KEY 
+    AND AL3.GROUP_CUSTOMER_KEY=AL1.GROUP_CUSTOMER_KEY 
+    AND AL4.LOYALTY_CUSTOMER_KEY=AL1.LOYALTY_CUSTOMER_KEY)  
+    AND ((AL1.SNAPSHOT_DATE_KEY= %s  
+    AND AL2.GROUP_MASTER_TYPE_CODE='AIRPOINTSFORBUSINESS' 
+    AND AL3.GROUP_CUSTOMER_STATUS_CODE='ACTIVE' 
+    AND AL3.GROUP_CUSTOMER_ROLE_CODE IN ( 'EMPLOYEE', 'OWNER')))
+    AND AL3.GROUP_CUSTOMER_START_DATE between
+    TO_DATE(%s, 'YYYYMMDD') and TO_DATE(%s, 'YYYYMMDD')
+  amplifon: |
+    select distinct 
+    airpoints_membership_number,
+    'AMPLIFON' as PARTNER, 
+    1 as TARGET
+    from edr.ods_cdh_partner_matching
+    where dss_file_name like 'Amplifon%'
+    and matching_code is not null
+    and no_of_other_matches >= 1
+    and optional_2 = 'Wearer'
+  financial: |
+    SELECT DISTINCT 
+    AIRPOINTS_MEMBERSHIP_NUMBER,
+    CASE WHEN UPPER(LOYALTY_PRODUCT_DESCRIPTION) LIKE '%%ONE%%' THEN 'Onesmart' 
+    when LOYALTY_PRODUCT_DESCRIPTION = 'ANZ Airpoints Platinum Card' then 'ANZ_Platinum'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'ANZ Visa Business Airpoints Card' then 'ANZ_Business'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'ANZ Airpoints Classic Card' then 'ANZ_Classic'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'Westpac Standard Card' then 'Westpac_Standard'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'Westpac Platinum Card' then 'Westpac_Platinum'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'Westpac World Card' then 'Westpac_World'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'Westpac Business Card' then 'Westpac_Business'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'Westpac Debit Card' then 'Westpac_Debit'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'Airpoints Low Fee Credit Card' then 'Kiwibank_Low_Fee'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'Airpoints Standard Credit Card' then 'Kiwibank_Standard'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'Airpoints Platinum Credit Card' then 'Kiwibank_Platinum'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'American Express Airpoints Platinum Rese' then 'AMEX_Platinum'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'American Express Airpoints Card' then 'AMEX_New'
+    when LOYALTY_PRODUCT_DESCRIPTION = 'American Express Airpoints Platinum Card' then 'AMEX_AE_Platinum'
+    ELSE LOYALTY_PRODUCT_DESCRIPTION END AS CARD_TYPE,
+    1 as TARGET
+    
+    from 
+    EDR.Fact_Loy_Customer_Product fcp 
+    LEFT JOIN EDR.Dim_Loyalty_Product lp 
+    ON lp.Loyalty_Product_Key = fcp.Loyalty_Product_Key
+    left join edr.dim_current_customer dd
+    on fcp.current_customer_key = dd.current_customer_key
+    
+    WHERE (lp.Loyalty_Product_Group_Code='BANK_CARD' OR LP.BUSINESS_PARTNER_CODE='MPMS')
+    and fcp.NZT_EFFECTIVE_FROM_DATETIME between TO_DATE(%s, 'YYYYMMDD') and TO_DATE(%s, 'YYYYMMDD')
+    and (
+    	LOYALTY_PRODUCT_DESCRIPTION in (  
+    	'ANZ Airpoints Platinum Card',
+    	'ANZ Visa Business Airpoints Card',
+    	'ANZ Airpoints Classic Card',
+    	'Westpac Standard Card',
+    	'Westpac Platinum Card',
+    	'Westpac World Card',
+    	'Westpac Business Card',
+    	'Westpac Debit Card',
+    	'Airpoints Low Fee Credit Card',
+    	'Airpoints Standard Credit Card',
+    	'Airpoints Platinum Credit Card',
+    	'American Express Airpoints Platinum Rese',
+    	'American Express Airpoints Card',
+    	'American Express Airpoints Platinum Card'
+    ) or UPPER(LOYALTY_PRODUCT_DESCRIPTION) LIKE '%%ONE%%')
+    order by AIRPOINTS_MEMBERSHIP_NUMBER
+  ancillary_direct: |
+    select distinct 
+    airnz_frequent_flyer_id as AIRPOINTS_MEMBERSHIP_NUMBER,
+    case when RESERVATION_SYSTEM_PRODUCT_ID in ('SC1','SC2','SC3') then 'SkyCouch'
+    when RESERVATION_SYSTEM_PRODUCT_ID in ('UPU','UPC','UYC') then 'OneUp'
+    when RESERVATION_SYSTEM_PRODUCT_ID = '0BG' then 'Insurance'
+    when RESERVATION_SYSTEM_PRODUCT_ID in ('PS1','PS2','PS3','0B5') then 'Seat'
+    when RESERVATION_SYSTEM_PRODUCT_ID in ('0CC','0CD','0CE') then 'Baggage'
+    end as ANCILLARY_GROUP
+    
+    from edr.fact_emd_sale_coupon emd
+    inner join edr.dim_reservation_system_product p
+    on emd.reservation_system_product_key = p.reservation_system_product_key
+    
+    where 
+    RESERVATION_SYSTEM_PRODUCT_ID in (
+    '0BG',
+    '0CC','0CD','0CE',
+    'PS1','PS2','PS3',
+    'SC1','SC2','SC3','0B5', 
+    'UPU','UPC','UYC')
+    and emd.LOCAL_DOCUMENT_ISSUE_DATE_KEY between %s and %s
+    and airnz_frequent_flyer_id != 'N/A'
+  ancillary_indirect: |
+    WITH TARGETS AS(
+    SELECT
+        DISTINCT AIRPOINTS_MEMBERSHIP_NUMBER,
+        CASE
+            when pc.ACCOUNTING_GROUP_ID = 'LANG' THEN 'LANGHAM'
+            when pc.sub_group = 'Hotels' THEN 'ALL_HOTELS'
+            when pc.ACCOUNTING_GROUP_ID = 'AVIS' THEN 'AVIS'	
+            when pc.ACCOUNTING_GROUP_ID = 'BUDG' THEN 'BUDGET'		
+            when pc.sub_group = 'Expedia' THEN 'EXPEDIA'
+            when pc.ACCOUNTING_GROUP_ID = 'VLTP' then 'Valet'
+            when point_code_id in ('AKAP','WEAP') then 'Parking'
+            when point_code_id = 'TAXE' then 'Taxi'
+                  
+            END AS ANCILLARY_GROUP
+    FROM
+        (SELECT * FROM EDR.FACT_CDH_AIRPOINTS
+            WHERE transaction_date_key BETWEEN %s AND %s
+        ) a
+    LEFT JOIN EDR.DIM_POINT_CODE pc ON
+        a.POINT_CODE_KEY = pc.POINT_CODE_KEY
+    LEFT JOIN EDR.DIM_LOYALTY_TRANSACTION_TYPE b ON
+        a.LOYALTY_TRANSACTION_TYPE_KEY = b.LOYALTY_TRANSACTION_TYPE_KEY
+    WHERE
+        a.DELETE_IND = 'N'
+        AND a.EQUIJOIN_FLAG = 'Y'
+        AND a.REVERSAL_ID = 0
+        AND HOME_NO_OF_DOLLARS_AMT != 0
+    ) SELECT
+    *
+    FROM
+    TARGETS
+    WHERE
+    ANCILLARY_GROUP IS NOT NULL
+  farehold: |
+    SELECT distinct 
+    AFD_sub.AIRPOINTS_MEMBERSHIP_NUMBER, 
+    'Fare_Hold' as ANCILLARY_GROUP
+    
+    FROM (
+    SELECT distinct 
+    ESD.PNR_CREATION_DATE_KEY,
+    ESD.PNR_IDENTIFIER
+    FROM EDR.FACT_EMD_SALE_DOCUMENT ESD
+    INNER JOIN EDR.DIM_FIRST_RES_SYSTEM_PRODUCT RSP    
+    ON RSP.FIRST_RES_SYSTEM_PRODUCT_KEY = ESD.FIRST_RES_SYSTEM_PRODUCT_KEY
+    WHERE RSP.FIRST_RES_SYSTEM_PRODUCT_ID IN ('990')
+    AND   ESD.PNR_CREATION_DATE_KEY between %s and %s) ESD_sub
+    
+    LEFT JOIN (
+    SELECT distinct
+    F.PNR_IDENTIFIER,
+    PCD.PNR_CREATION_DATE_KEY,
+    DCC.AIRPOINTS_MEMBERSHIP_NUMBER
+    
+    FROM EDR.FACT_RES_PASSENGER_LEG F
+    LEFT OUTER JOIN EDR.DIM_PASSENGER DP ON DP.PASSENGER_KEY = F.PASSENGER_KEY
+    LEFT OUTER JOIN EDR.DIM_CURRENT_CUSTOMER DCC ON DCC.current_customer_key = F.loyalty_customer_id
+    LEFT OUTER JOIN EDR.DIM_PNR_CREATION_DATE PCD ON PCD.PNR_CREATION_DATE_KEY = F.PNR_CREATION_DATE_KEY
+    LEFT OUTER JOIN EDR.DIM_LEG_ORIGIN_AIRPORT LOA ON LOA.LEG_ORIGIN_AIRPORT_KEY = F.LEG_ORIGIN_AIRPORT_KEY
+    
+    WHERE
+    f.DSS_FACT_CURRENT_FLAG = 'Y'
+    AND DCC.AIRPOINTS_MEMBERSHIP_NUMBER not in ('N/A', 'UNKNOWN')
+    AND f.EMD_Sequence_Number = 1
+    AND LOA.LEG_ORIGIN_AIRPORT_CODE != 'U'
+    AND f.PNR_CREATION_DATE_KEY  between %s and %s) AFD_sub
+               
+    ON ESD_sub.PNR_CREATION_DATE_KEY = AFD_sub.PNR_CREATION_DATE_KEY and 
+    ESD_sub.PNR_IDENTIFIER = AFD_sub.PNR_IDENTIFIER
+  cabin: |
+    SELECT DISTINCT 
+      AIRPOINTS_MEMBERSHIP_NUMBER,
+      CASE WHEN PREM_ECONOMY_CNT_12M > 0 THEN 1 ELSE 0 END AS TARGET_CABIN_PREM_ECONOMY,
+      CASE WHEN BUSINESS_CNT_12M > 0 THEN 1 ELSE 0 END AS TARGET_CABIN_BUSINESS
+    FROM EDR.FACT_CDH_MONTH_CUSTOMER
+    WHERE 
+    SNAPSHOT_DATE_KEY = %s AND scheme_id = 'AP'
+    AND (PREM_ECONOMY_CNT_12M > 0 OR BUSINESS_CNT_12M > 0)
+  cabin_upgrade: |
+    SELECT 
+    distinct
+        AL9.AIRPOINTS_MEMBERSHIP_NUMBER,
+      	AL4.RES_SYSTEM_PRODUCT_DESCRIPTION as ANCILLARY_GROUP
+    FROM 
+      	EDR.FACT_EMD_SALE_DOCUMENT AL1, 
+      	EDR.DIM_SELL_AGENT AL2, 
+      	EDR.DIM_LOCAL_DOCUMENT_ISSUE_DATE AL3, 
+      	EDR.DIM_FIRST_RES_SYSTEM_PRODUCT AL4, 
+      	EDR.DIM_LOYALTY_CUSTOMER AL9 
+    WHERE 
+      	AL2.SELL_AGENT_KEY=AL1.SELL_AGENT_KEY 
+      	AND AL3.LOCAL_DOCUMENT_ISSUE_DATE_KEY=AL1.LOCAL_DOCUMENT_ISSUE_DATE_KEY 
+      	AND AL4.FIRST_RES_SYSTEM_PRODUCT_KEY=AL1.FIRST_RES_SYSTEM_PRODUCT_KEY 
+      	AND AL9.LOYALTY_CUSTOMER_KEY=AL1.LOYALTY_CUSTOMER_KEY
+      	AND AL9.HOME_COUNTRY_NAME = 'NEW ZEALAND'
+      	AND AIRPOINTS_MEMBERSHIP_NUMBER != 'UNKNOWN'
+      	AND AL3.LOCAL_DOCUMENT_ISSUE_DATE_KEY between %s and %s
+      	AND AL4.RES_SYSTEM_PRODUCT_DESCRIPTION in 
+      	('BUSINESS PREMIER UPGRADE', 'PREMIUM ECONOMY UPGRADE')
+  gas: |
+    SELECT 
+    DISTINCT c.AIRPOINTS_MEMBERSHIP_NUMBER
+    from (
+    	SELECT * FROM edr.fact_res_passenger_leg leg
+    	where leg.pnr_creation_date_key BETWEEN %s AND %s
+    	and leg.dss_fact_current_flag = 'Y' 
+    	and leg.leg_cancellation_flag = 'N'
+    	and leg.operating_airline_key = 226 -- Air NZ
+    	and leg.emd_sequence_number = 1
+    	and leg.ticket_number != 'N/A'
+    	) l
+    INNER JOIN edr.dim_usage_loyalty_customer c
+    on l.USAGE_LOYALTY_CUSTOMER_KEY = c.USAGE_LOYALTY_CUSTOMER_KEY
+    AND c.HOME_COUNTRY_NAME = 'NEW ZEALAND'
+    INNER JOIN edr.DIM_PNR_CREATION_AGENCY PCA 
+    ON PCA.PNR_CREATION_AGENCY_KEY = l.PNR_CREATION_AGENCY_KEY
+    AND channel_name IN ('GRABASEAT','GRABASEAT MOBILE')
+  online: |
+    SELECT 
+    DISTINCT c.AIRPOINTS_MEMBERSHIP_NUMBER
+    from (
+    	SELECT * FROM edr.fact_res_passenger_leg leg
+    	where leg.pnr_creation_date_key BETWEEN %s AND %s
+    	and leg.dss_fact_current_flag = 'Y' 
+    	and leg.leg_cancellation_flag = 'N'
+    	and leg.operating_airline_key = 226 -- Air NZ
+    	and leg.emd_sequence_number = 1
+    	and leg.ticket_number != 'N/A'
+    	) l
+    INNER JOIN edr.dim_usage_loyalty_customer c
+    on l.USAGE_LOYALTY_CUSTOMER_KEY = c.USAGE_LOYALTY_CUSTOMER_KEY
+    AND c.HOME_COUNTRY_NAME = 'NEW ZEALAND'
+    INNER JOIN edr.DIM_PNR_CREATION_AGENCY PCA 
+    ON PCA.PNR_CREATION_AGENCY_KEY = l.PNR_CREATION_AGENCY_KEY
+    AND channel_name IN ('ONLINE DESKTOP','ONLINE MOBILE')
+score:
+  edw: |
+    SELECT DISTINCT
+     AIRPOINTS_MEMBERSHIP_NUMBER,
+     PROPENSITY_RANK,
+     PROPENSITY_SCORE
+    
+    FROM EDR.ODS_SAS_PROPENSITY_CURRENT
+    WHERE 
+    model_code = %s 
+    and LOAD_DATE_KEY = %s
+comms:
+  gas: |
+    SELECT DISTINCT AIRPOINTS_MEMBERSHIP_NUMBER
+    FROM EDR.FACT_CDH_CUSTOMER_PREFERENCE CCM 
+    INNER JOIN EDR.DIM_CURRENT_CUSTOMER DCC 
+    ON CCM.CURRENT_CUSTOMER_KEY = DCC.CURRENT_CUSTOMER_KEY
+    WHERE
+    PREFERENCE_ID=622 AND
+    CCM.DSS_CURRENT_FLAG = 'Y' AND
+    CCM.PREFERENCE_VALUE IN ('TRUE','Y') AND 
+    AIRPOINTS_MEMBERSHIP_NUMBER NOT IN ('N/A','UNKNOWN')
+  so: |
+    SELECT DISTINCT airpoints_membership_number FROM
+    EDR.DIM_LOYALTY_CUSTOMER_EXT lce INNER JOIN
+    EDR.DIM_CURRENT_CUSTOMER dcc ON dcc.loyalty_customer_id = lce.loyalty_customer_id
+    WHERE 
+    OVERRIDE_SPECIAL_OFFERS_FLAG='Y'
+    and DSS_CURRENT_FLAG='Y'
+    AND AIRPOINTS_MEMBERSHIP_NUMBER NOT IN ('N/A','UNKNOWN')
